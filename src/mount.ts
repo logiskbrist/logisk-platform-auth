@@ -82,6 +82,7 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
         state,
         codeChallenge,
         codeChallengeMethod: "S256",
+        ...(options.authorizeExtras ?? {}),
       });
     } catch (err) {
       res.status(500).send("failed to start login");
@@ -132,10 +133,18 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
       res.status(400).send("token exchange failed");
       return;
     }
-    const profile = extractProfile(tokens.idTokenClaims);
+    let profile = extractProfile(tokens.idTokenClaims);
     if (!profile) {
       res.status(400).send("no email in id token");
       return;
+    }
+    if (options.enrichProfile) {
+      try {
+        profile = await options.enrichProfile(profile, tokens.accessToken);
+      } catch {
+        res.status(500).send("profile enrichment failed");
+        return;
+      }
     }
     const returnTo = safeReturnTo(payload.returnTo);
     if (payload.targetHost === prodHost) {

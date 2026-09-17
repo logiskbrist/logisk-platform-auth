@@ -57,6 +57,24 @@ export interface MountOptions {
   scopes?: string[];
   onLogin: OnLogin;
   /**
+   * Runs on the prod pod right after the code-for-token exchange, before the
+   * profile is baked into the handoff JWT. Use this to enrich the profile
+   * with data the ID token doesn't carry — e.g. `jobTitle` / `officeLocation`
+   * via Microsoft Graph `/me` with the access token — since only the prod pod
+   * ever holds the access token. Best-effort: throw to abort login, return an
+   * unchanged profile to skip.
+   */
+  enrichProfile?: (
+    profile: EntraProfile,
+    accessToken: string | null,
+  ) => Promise<EntraProfile> | EntraProfile;
+  /**
+   * Extra query params forwarded to `msal.getAuthCodeUrl`, e.g. `prompt`,
+   * `login_hint`, `domain_hint`. `select_account` forces an account picker
+   * each login.
+   */
+  authorizeExtras?: Record<string, string>;
+  /**
    * Pattern the preview `target` origin must match before prod will bounce
    * a handoff to it. Default: same registrable host + one subdomain level as
    * `redirectUri`, e.g. from `https://foo.apps.godtbrod.no` allows any
@@ -96,6 +114,10 @@ export interface MsalLike {
     state: string;
     codeChallenge: string;
     codeChallengeMethod: "S256";
+    prompt?: string;
+    loginHint?: string;
+    domainHint?: string;
+    [extra: string]: unknown;
   }): Promise<string>;
   acquireTokenByCode(input: {
     code: string;
