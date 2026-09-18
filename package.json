@@ -4,19 +4,26 @@
   "description": "Preview-aware Entra auth broker for the Logiskbrist platform. One redirect URI per app; per-PR testversjoner bounce through the prod host and get a signed handoff.",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap --target node20 --external @azure/msal-node --external express",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -36,6 +43,7 @@
     "@types/supertest": "^7.2.1",
     "express": "^5.0.1",
     "supertest": "^7.2.2",
+    "tsup": "^8.5.1",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   },
