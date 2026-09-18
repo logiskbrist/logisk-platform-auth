@@ -17,13 +17,15 @@ export interface EntraProfile {
  * The `onLogin` hook the host app implements. Called on both direct-prod and
  * preview-handoff paths with a verified Entra profile.
  *
- * Return the URL to redirect the browser to next. Must be a same-origin path
- * (starts with `/`) — the package rejects other shapes.
+ * Return a URL to redirect the browser to next. Must be a same-origin path
+ * (starts with `/`) — the package rejects other shapes. Return an empty
+ * string / `undefined` to redirect to the `returnTo` the browser started with.
  */
 export type OnLogin = (
   profile: EntraProfile,
   req: Request,
-) => Promise<string> | string;
+  returnTo: string,
+) => Promise<string | undefined | void> | string | undefined | void;
 
 export interface RouteConfig {
   /** Kicks off the flow. Default: /api/auth/microsoft/login */

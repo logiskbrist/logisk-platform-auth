@@ -150,8 +150,8 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
     if (payload.targetHost === prodHost) {
       // Direct-prod login.
       try {
-        const dest = safeReturnTo(await options.onLogin(profile, req));
-        res.redirect(302, dest || returnTo);
+        const override = await options.onLogin(profile, req, returnTo);
+        res.redirect(302, override ? safeReturnTo(override) : returnTo);
       } catch {
         res.status(500).send("session setup failed");
       }
@@ -190,8 +190,9 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
         },
         options.handoffSecret,
       );
-      const dest = safeReturnTo(await options.onLogin(payload.profile, req));
-      res.redirect(302, dest || safeReturnTo(payload.returnTo));
+      const returnTo = safeReturnTo(payload.returnTo);
+      const override = await options.onLogin(payload.profile, req, returnTo);
+      res.redirect(302, override ? safeReturnTo(override) : returnTo);
     } catch (err) {
       if (err instanceof HandoffError) {
         res.status(400).send(`handoff ${err.code}`);
