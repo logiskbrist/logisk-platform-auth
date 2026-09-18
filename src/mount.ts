@@ -66,9 +66,14 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
 
   app.get(routes.login, async (req, res) => {
     const returnTo = safeReturnTo(readQuery(req, "returnTo"));
-    if (options.prodAuthOrigin) {
+    // Any request not on the prod host — preview PR host, customer-alias
+    // host, or anything else the app serves — must bounce through the prod
+    // host, since that's the single URI Entra will redirect back to. Uses
+    // `prodAuthOrigin` if set, otherwise derives it from `redirectUri`.
+    const bounceOrigin = options.prodAuthOrigin ?? `https://${prodHost}`;
+    if (req.get("host") !== prodHost) {
       const target = `${req.protocol}://${req.get("host")}`;
-      const url = new URL(routes.login, options.prodAuthOrigin);
+      const url = new URL(routes.login, bounceOrigin);
       url.searchParams.set("target", target);
       url.searchParams.set("returnTo", returnTo);
       res.redirect(302, url.toString());
