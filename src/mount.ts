@@ -4,6 +4,7 @@ import { HandoffError, signHandoff, verifyHandoff } from "./handoff.js";
 import { MemoryNonceCache } from "./nonce.js";
 import { decryptState, encryptState, StateError } from "./state.js";
 import type {
+  AuthErrorInfo,
   EntraProfile,
   MountOptions,
   MsalLike,
@@ -37,14 +38,34 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
   const previewPattern =
     options.previewOriginPattern ?? defaultPreviewOriginPattern(options.redirectUri);
   const prodHost = new URL(options.redirectUri).host;
-  // MSAL loads lazily via top-level await once, then reused for every request.
   const msalPromise: Promise<MsalLike> = options.msalClient
     ? Promise.resolve(options.msalClient)
     : createDefaultMsal(options);
 
+  async function fail(
+    res: Response,
+    req: Request,
+    info: AuthErrorInfo,
+    defaultStatus: number,
+    defaultBody: string,
+  ): Promise<void> {
+    if (options.onError) {
+      let redirect: string | undefined | void;
+      try {
+        redirect = await options.onError(info, req);
+      } catch {
+        // onError itself threw — fall through to default response.
+      }
+      if (redirect) {
+        res.redirect(302, safeReturnTo(redirect));
+        return;
+      }
+    }
+    res.status(defaultStatus).send(defaultBody);
+  }
+
   app.get(routes.login, async (req, res) => {
     const returnTo = safeReturnTo(readQuery(req, "returnTo"));
-    // Preview pod: bounce to prod's /login with target.
     if (options.prodAuthOrigin) {
       const target = `${req.protocol}://${req.get("host")}`;
       const url = new URL(routes.login, options.prodAuthOrigin);
@@ -53,12 +74,17 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
       res.redirect(302, url.toString());
       return;
     }
-    // Prod pod: could be direct-prod OR a preview bounce. `target` decides.
     let targetHost = prodHost;
     const target = readQuery(req, "target");
     if (target) {
       if (!isAllowedPreviewOrigin(target, previewPattern)) {
-        res.status(400).send("target origin not allowed");
+        await fail(
+          res,
+          req,
+          { code: "target_origin_denied", step: "login" },
+          400,
+          "target origin not allowed",
+        );
         return;
       }
       targetHost = new URL(target).host;
@@ -85,25 +111,43 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
         ...(options.authorizeExtras ?? {}),
       });
     } catch (err) {
-      res.status(500).send("failed to start login");
+      await fail(
+        res,
+        req,
+        { code: "start_failed", step: "login", error: err },
+        500,
+        "failed to start login",
+      );
       return;
     }
     res.redirect(302, authUrl);
   });
 
   app.get(routes.callback, async (req, res) => {
-    // Callback only reachable on prod host (that's where the redirect URI
-    // points). Guard against misroute.
     if (req.get("host") !== prodHost) {
-      res.status(400).send("callback must run on prod host");
+      await fail(
+        res,
+        req,
+        { code: "callback_wrong_host", step: "callback" },
+        400,
+        "callback must run on prod host",
+      );
       return;
     }
     const code = readQuery(req, "code");
     const stateStr = readQuery(req, "state");
     if (!code || !stateStr) {
-      const err = readQuery(req, "error");
-      const desc = readQuery(req, "error_description");
-      res.status(400).send(err ? `${err}: ${desc ?? ""}` : "missing code or state");
+      const entraError = readQuery(req, "error");
+      const entraDescription = readQuery(req, "error_description");
+      await fail(
+        res,
+        req,
+        entraError
+          ? { code: "entra_denied", step: "callback", entraError, entraDescription }
+          : { code: "missing_code_or_state", step: "callback" },
+        400,
+        entraError ? `${entraError}: ${entraDescription ?? ""}` : "missing code or state",
+      );
       return;
     }
     let payload;
@@ -114,10 +158,22 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
       });
     } catch (err) {
       if (err instanceof StateError) {
-        res.status(400).send(`state ${err.code}`);
+        await fail(
+          res,
+          req,
+          { code: `state_${err.code}`, step: "callback", error: err },
+          400,
+          `state ${err.code}`,
+        );
         return;
       }
-      res.status(500).send("state decrypt failed");
+      await fail(
+        res,
+        req,
+        { code: "state_decrypt_failed", step: "callback", error: err },
+        500,
+        "state decrypt failed",
+      );
       return;
     }
     let tokens;
@@ -129,35 +185,57 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
         redirectUri: options.redirectUri,
         codeVerifier: payload.codeVerifier,
       });
-    } catch {
-      res.status(400).send("token exchange failed");
+    } catch (err) {
+      await fail(
+        res,
+        req,
+        { code: "token_exchange", step: "callback", error: err },
+        400,
+        "token exchange failed",
+      );
       return;
     }
     let profile = extractProfile(tokens.idTokenClaims);
     if (!profile) {
-      res.status(400).send("no email in id token");
+      await fail(
+        res,
+        req,
+        { code: "no_email", step: "callback" },
+        400,
+        "no email in id token",
+      );
       return;
     }
     if (options.enrichProfile) {
       try {
         profile = await options.enrichProfile(profile, tokens.accessToken);
-      } catch {
-        res.status(500).send("profile enrichment failed");
+      } catch (err) {
+        await fail(
+          res,
+          req,
+          { code: "enrich_failed", step: "callback", error: err },
+          500,
+          "profile enrichment failed",
+        );
         return;
       }
     }
     const returnTo = safeReturnTo(payload.returnTo);
     if (payload.targetHost === prodHost) {
-      // Direct-prod login.
       try {
         const override = await options.onLogin(profile, req, returnTo);
         res.redirect(302, override ? safeReturnTo(override) : returnTo);
-      } catch {
-        res.status(500).send("session setup failed");
+      } catch (err) {
+        await fail(
+          res,
+          req,
+          { code: "session_setup", step: "callback", error: err },
+          500,
+          "session setup failed",
+        );
       }
       return;
     }
-    // Preview handoff.
     const token = signHandoff(
       {
         profile,
@@ -176,7 +254,13 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
   app.get(routes.handoff, async (req, res) => {
     const token = readQuery(req, "t");
     if (!token) {
-      res.status(400).send("missing handoff token");
+      await fail(
+        res,
+        req,
+        { code: "missing_token", step: "handoff" },
+        400,
+        "missing handoff token",
+      );
       return;
     }
     const expectedTargetHost = req.get("host") ?? "";
@@ -195,10 +279,22 @@ export function mountEntraAuth(app: Express, options: MountOptions): void {
       res.redirect(302, override ? safeReturnTo(override) : returnTo);
     } catch (err) {
       if (err instanceof HandoffError) {
-        res.status(400).send(`handoff ${err.code}`);
+        await fail(
+          res,
+          req,
+          { code: `handoff_${err.code}`, step: "handoff", error: err },
+          400,
+          `handoff ${err.code}`,
+        );
         return;
       }
-      res.status(500).send("handoff failed");
+      await fail(
+        res,
+        req,
+        { code: "handoff_failed", step: "handoff", error: err },
+        500,
+        "handoff failed",
+      );
     }
   });
 }
@@ -233,8 +329,6 @@ function pickString(o: Record<string, unknown>, k: string): string | undefined {
 }
 
 async function createDefaultMsal(options: MountOptions): Promise<MsalLike> {
-  // Dynamic import so the peer dep is only loaded when actually needed —
-  // tests inject their own client via `msalClient` and never hit this path.
   const msalNode = await import("@azure/msal-node");
   const client = new msalNode.ConfidentialClientApplication({
     auth: {

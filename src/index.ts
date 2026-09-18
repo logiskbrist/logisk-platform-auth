@@ -21,4 +21,6 @@ export type {
   RouteConfig,
   StatePayload,
   HandoffPayload,
+  AuthErrorInfo,
+  AuthStep,
 } from "./types.js";

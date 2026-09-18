@@ -77,6 +77,19 @@ export interface MountOptions {
    */
   authorizeExtras?: Record<string, string>;
   /**
+   * Called before the package sends a 4xx/5xx response for an auth-flow
+   * error. Return a same-origin path (starts with `/`) to redirect the
+   * browser there instead of showing the default 400/500 text body. Return
+   * `void`/`undefined` to keep the default text-body behaviour.
+   *
+   * Useful for surfacing a styled login page with an error label (e.g.
+   * `/auth/login?feil=konto`) instead of a bare `handoff host_mismatch`.
+   */
+  onError?: (
+    info: AuthErrorInfo,
+    req: Request,
+  ) => Promise<string | undefined | void> | string | undefined | void;
+  /**
    * Pattern the preview `target` origin must match before prod will bounce
    * a handoff to it. Default: same registrable host + one subdomain level as
    * `redirectUri`, e.g. from `https://foo.apps.godtbrod.no` allows any
@@ -130,6 +143,26 @@ export interface MsalLike {
     idTokenClaims: Record<string, unknown>;
     accessToken: string | null;
   }>;
+}
+
+/** Where the package was when the error happened. */
+export type AuthStep = "login" | "callback" | "handoff";
+
+export interface AuthErrorInfo {
+  /**
+   * Short machine-readable code — e.g. `state_expired`, `token_exchange`,
+   * `handoff_host_mismatch`, `handoff_replay`, `target_origin_denied`,
+   * `entra_denied`, `no_email`. Stable enough to key off for custom UX.
+   */
+  code: string;
+  /** Which of the three routes ran when this error surfaced. */
+  step: AuthStep;
+  /** The underlying error if there was one — for logging only. */
+  error?: unknown;
+  /** The raw Entra `error` param, present when Entra bounced us with a failure. */
+  entraError?: string;
+  /** The raw Entra `error_description` param. */
+  entraDescription?: string;
 }
 
 /** Payload we pack into the OAuth state parameter (encrypted). */
